@@ -2,6 +2,10 @@
 
 A single-file [Streamlit](https://streamlit.io/) application for a **B2B2C Patient Remote Monitoring** company. It scores the health of each clinic (a B2B customer) from daily telemetry and surfaces which accounts are **Stable**, **At-Risk**, or **Critical** so Customer Success can prioritize outreach.
 
+**🔗 Live demo:** [clinicengagementsystemcapstone.streamlit.app](https://clinicengagementsystemcapstone.streamlit.app)
+
+[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://clinicengagementsystemcapstone.streamlit.app)
+
 ## Overview
 
 The platform combines three signals into a single weighted health score per clinic:
@@ -103,6 +107,8 @@ PRM_DB_PATH=/tmp/prm.db streamlit run app.py
 The application is a standard Streamlit app defined entirely by `app.py` and `requirements.txt`, so it runs anywhere Python 3.9+ is available. The SQLite database is created and seeded automatically on startup, so there is no separate provisioning step. On platforms with an ephemeral filesystem the database resets on each restart or redeploy; because the seed data is deterministic mock telemetry this is acceptable for a demo, and `PRM_DB_PATH` can point at persistent storage where durability is required.
 
 ### Option A — Streamlit Community Cloud
+
+> **Deployed instance:** <https://clinicengagementsystemcapstone.streamlit.app>
 
 1. Ensure the repository is pushed to GitHub (this project lives on `origin/main`).
 2. In Streamlit Community Cloud, create a new app, select this repository and branch, and set the main file path to `app.py`.
