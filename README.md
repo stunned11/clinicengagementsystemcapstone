@@ -65,6 +65,8 @@ The database is seeded with **5 clinics × 30 days** of deterministic mock telem
 ├── app.py                      # Streamlit app + scoring engine (+ commented test suite)
 ├── test_app.py                 # 10 pytest unit tests for the scoring boundaries
 ├── requirements.txt            # streamlit, pandas, pytest
+├── docs/
+│   └── design.md               # Software Design, Architecture & Testing Document
 ├── .github/workflows/test.yml  # CI: runs pytest on Python 3.10 / 3.11 / 3.12
 └── README.md
 ```
@@ -95,6 +97,46 @@ To use a different database location, set the `PRM_DB_PATH` environment variable
 ```bash
 PRM_DB_PATH=/tmp/prm.db streamlit run app.py
 ```
+
+## Deployment
+
+The application is a standard Streamlit app defined entirely by `app.py` and `requirements.txt`, so it runs anywhere Python 3.9+ is available. The SQLite database is created and seeded automatically on startup, so there is no separate provisioning step. On platforms with an ephemeral filesystem the database resets on each restart or redeploy; because the seed data is deterministic mock telemetry this is acceptable for a demo, and `PRM_DB_PATH` can point at persistent storage where durability is required.
+
+### Option A — Streamlit Community Cloud
+
+1. Ensure the repository is pushed to GitHub (this project lives on `origin/main`).
+2. In Streamlit Community Cloud, create a new app, select this repository and branch, and set the main file path to `app.py`.
+3. Streamlit installs `requirements.txt` and launches the app automatically. Set `PRM_DB_PATH` and any future secrets under the app's **Advanced settings**.
+
+### Option B — Docker
+
+Create a `Dockerfile` in the project root:
+
+```dockerfile
+FROM python:3.12-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+EXPOSE 8501
+CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+```
+
+Build and run the container:
+
+```bash
+docker build -t clinic-health .
+docker run -p 8501:8501 clinic-health
+```
+
+### Option C — Self-hosted server or VM
+
+```bash
+pip install -r requirements.txt
+streamlit run app.py --server.port 8501 --server.address 0.0.0.0
+```
+
+The dashboard is served on port `8501`. For production, run the process under a supervisor (e.g., `systemd`) and place a reverse proxy such as Nginx in front to terminate TLS.
 
 ## Running the tests
 
