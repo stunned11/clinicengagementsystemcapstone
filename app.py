@@ -1,0 +1,481 @@
+"""
+Patient Remote Monitoring - Customer Health Scoring Platform
+============================================================
+
+A single-file, production-ready Streamlit application for a B2B2C Patient
+Remote Monitoring company. It scores the health of every clinic (B2B customer)
+using three telemetry signals:
+
+    * B2C Sync Compliance  (45%) - % of patients syncing their devices
+    * B2B Alert Triage     (35%) - avg hours for staff to triage clinical alerts
+    * Seat Utilization     (20%) - active clinician logins vs licensed seats
+
+Each account is categorized as Stable, At-Risk, or Critical.
+
+Run locally:
+    pip install streamlit pandas
+    streamlit run app.py
+
+Unit tests: see the commented-out pytest suite at the very bottom of this file.
+"""
+
+from __future__ import annotations
+
+import os
+import random
+import sqlite3
+from datetime import date, timedelta
+
+# NOTE: pandas and streamlit are imported lazily inside the functions that use
+# them. This keeps the pure calculation engine (and its unit tests) importable
+# with zero third-party dependencies installed.
+
+
+# ---------------------------------------------------------------------------
+# Configuration & constants
+# ---------------------------------------------------------------------------
+
+# SQLite database file location (overridable for tests / deployments).
+DB_PATH = os.environ.get("PRM_DB_PATH", "patient_monitoring.db")
+
+# Amount of historical telemetry generated per clinic during seeding.
+TELEMETRY_DAYS = 30
+
+# Composite health-score weights. These MUST sum to 1.0.
+WEIGHT_SYNC = 0.45     # B2C patient sync compliance
+WEIGHT_TRIAGE = 0.35   # B2B alert triage responsiveness
+WEIGHT_SEAT = 0.20     # Seat / license utilization
+
+# Alert-triage SLA thresholds (hours) used to normalize triage time into a
+# 0-100 score. Meeting the TARGET (or faster) scores 100; hitting the MAX
+# (or slower) scores 0.
+TRIAGE_TARGET_HOURS = 2.0
+TRIAGE_MAX_HOURS = 24.0
+
+# Health-score category thresholds (inclusive lower bounds).
+STABLE_THRESHOLD = 80.0    # score >= 80       -> Stable
+AT_RISK_THRESHOLD = 60.0   # 60 <= score < 80  -> At-Risk
+                           # score < 60        -> Critical
+
+# Deterministic seed so the mock dataset is reproducible across runs.
+RANDOM_SEED = 42
+
+# Static clinic roster used to seed the database. Each profile defines the
+# behavioral "center of gravity" for that account's generated telemetry:
+#   (name, plan_tier, licensed_seats, sync_mean, triage_mean_hours, login_ratio)
+CLINIC_PROFILES = [
+    ("Cascade Family Health",      "Enterprise", 25, 93.0,  1.5, 0.90),
+    ("Harbor Point Cardiology",    "Enterprise", 18, 86.0,  3.0, 0.80),
+    ("Ridgeline Community Clinic", "Growth",      12, 74.0,  7.5, 0.62),
+    ("Sunset Valley Medical",      "Growth",      10, 56.0, 14.0, 0.45),
+    ("Metro Wellness Group",       "Starter",      8, 66.0, 10.0, 0.55),
+]
+
+
+# ---------------------------------------------------------------------------
+# Calculation engine (pure functions - unit tested at the bottom of this file)
+# ---------------------------------------------------------------------------
+
+def clamp(value: float, low: float = 0.0, high: float = 100.0) -> float:
+    """Constrain *value* to the inclusive range [low, high]."""
+    return max(low, min(high, value))
+
+
+def score_sync(compliance_pct: float) -> float:
+    """Score B2C patient sync compliance.
+
+    Compliance is already a percentage, so the score is simply the value
+    clamped into the valid 0-100 range.
+    """
+    return clamp(compliance_pct)
+
+
+def score_triage(hours: float,
+                 target_hours: float = TRIAGE_TARGET_HOURS,
+                 max_hours: float = TRIAGE_MAX_HOURS) -> float:
+    """Score B2B alert-triage responsiveness (fewer hours == better).
+
+    Triage time is normalized linearly: <= target -> 100, >= max -> 0.
+    """
+    span = max_hours - target_hours
+    if span <= 0:
+        # Degenerate configuration guard: avoid divide-by-zero.
+        return 100.0 if hours <= target_hours else 0.0
+    return clamp(100.0 * (max_hours - hours) / span)
+
+
+def score_seat_utilization(avg_logins: float, licensed_seats: int) -> float:
+    """Score seat utilization (active clinician logins vs licensed seats)."""
+    if licensed_seats <= 0:
+        # No licensed seats means there is nothing to utilize.
+        return 0.0
+    return clamp(100.0 * avg_logins / licensed_seats)
+
+
+def weighted_health_score(sync: float, triage: float, seat: float) -> float:
+    """Combine the three sub-scores into a single weighted composite (0-100)."""
+    composite = WEIGHT_SYNC * sync + WEIGHT_TRIAGE * triage + WEIGHT_SEAT * seat
+    return round(composite, 2)
+
+
+def categorize(score: float) -> str:
+    """Map a composite health score to an account-health category."""
+    if score >= STABLE_THRESHOLD:
+        return "Stable"
+    if score >= AT_RISK_THRESHOLD:
+        return "At-Risk"
+    return "Critical"
+
+
+# ---------------------------------------------------------------------------
+# Database layer (auto-initialize + seed)
+# ---------------------------------------------------------------------------
+
+def get_connection(db_path: str = DB_PATH) -> sqlite3.Connection:
+    """Open a SQLite connection with dict-like row access."""
+    conn = sqlite3.connect(db_path, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db(conn: sqlite3.Connection) -> None:
+    """Create the schema if it does not already exist."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS clinics (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            name           TEXT    NOT NULL UNIQUE,
+            plan_tier      TEXT    NOT NULL,
+            licensed_seats INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS telemetry (
+            id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+            clinic_id                INTEGER NOT NULL,
+            metric_date              TEXT    NOT NULL,
+            patient_sync_compliance  REAL    NOT NULL,  -- percent (0-100)
+            alert_triage_hours       REAL    NOT NULL,  -- avg hours to triage
+            clinician_login_count    INTEGER NOT NULL,  -- daily active logins
+            FOREIGN KEY (clinic_id) REFERENCES clinics (id),
+            UNIQUE (clinic_id, metric_date)
+        );
+        """
+    )
+    conn.commit()
+
+
+def seed_db(conn: sqlite3.Connection) -> None:
+    """Populate mock clinics + telemetry, but only when the DB is empty."""
+    already_seeded = conn.execute("SELECT COUNT(*) FROM clinics").fetchone()[0]
+    if already_seeded:
+        return  # Idempotent: never double-seed an existing database.
+
+    rng = random.Random(RANDOM_SEED)
+    today = date.today()
+
+    for name, plan_tier, seats, sync_mean, triage_mean, login_ratio in CLINIC_PROFILES:
+        cursor = conn.execute(
+            "INSERT INTO clinics (name, plan_tier, licensed_seats) VALUES (?, ?, ?)",
+            (name, plan_tier, seats),
+        )
+        clinic_id = cursor.lastrowid
+
+        for offset in range(TELEMETRY_DAYS):
+            metric_day = today - timedelta(days=(TELEMETRY_DAYS - 1 - offset))
+
+            # Generate noisy-but-plausible daily telemetry around the profile.
+            sync = clamp(rng.gauss(sync_mean, 4.0))
+            triage = max(0.1, rng.gauss(triage_mean, 1.5))
+            logins = int(round(clamp(rng.gauss(login_ratio * seats, 1.2), 0, seats)))
+
+            conn.execute(
+                """
+                INSERT INTO telemetry (
+                    clinic_id, metric_date, patient_sync_compliance,
+                    alert_triage_hours, clinician_login_count
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (clinic_id, metric_day.isoformat(), round(sync, 2),
+                 round(triage, 2), logins),
+            )
+
+    conn.commit()
+
+
+def ensure_database(db_path: str = DB_PATH) -> None:
+    """Idempotently create and seed the database (safe to call every run)."""
+    conn = get_connection(db_path)
+    try:
+        init_db(conn)
+        seed_db(conn)
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Scorecard aggregation (raw telemetry -> per-account health scores)
+# ---------------------------------------------------------------------------
+
+def build_scorecard(db_path: str = DB_PATH) -> pd.DataFrame:
+    """Aggregate telemetry per clinic and compute weighted health scores."""
+    import pandas as pd
+
+    conn = get_connection(db_path)
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                c.name                          AS clinic,
+                c.plan_tier                     AS plan_tier,
+                c.licensed_seats                AS licensed_seats,
+                AVG(t.patient_sync_compliance)  AS avg_sync,
+                AVG(t.alert_triage_hours)       AS avg_triage_hours,
+                AVG(t.clinician_login_count)    AS avg_logins
+            FROM clinics c
+            JOIN telemetry t ON t.clinic_id = c.id
+            GROUP BY c.id
+            ORDER BY c.name
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    records = []
+    for r in rows:
+        sync_score = score_sync(r["avg_sync"])
+        triage_score = score_triage(r["avg_triage_hours"])
+        seat_score = score_seat_utilization(r["avg_logins"], r["licensed_seats"])
+        health = weighted_health_score(sync_score, triage_score, seat_score)
+
+        records.append(
+            {
+                "Clinic": r["clinic"],
+                "Plan": r["plan_tier"],
+                "Sync Compliance %": round(r["avg_sync"], 1),
+                "Triage Hours": round(r["avg_triage_hours"], 1),
+                "Seat Utilization %": round(seat_score, 1),
+                "Sync Score": round(sync_score, 1),
+                "Triage Score": round(triage_score, 1),
+                "Health Score": health,
+                "Status": categorize(health),
+            }
+        )
+
+    return pd.DataFrame.from_records(records)
+
+
+# ---------------------------------------------------------------------------
+# Streamlit presentation layer
+# ---------------------------------------------------------------------------
+
+# CSS applied to each category for at-a-glance status coloring in the table.
+STATUS_STYLES = {
+    "Stable": "background-color: #1b5e20; color: white;",
+    "At-Risk": "background-color: #b26a00; color: white;",
+    "Critical": "background-color: #b71c1c; color: white;",
+}
+
+
+def _style_status_column(column: pd.Series) -> list[str]:
+    """Return per-cell CSS for the Status column (helper for Styler.apply)."""
+    return [STATUS_STYLES.get(value, "") for value in column]
+
+
+def render_sidebar() -> list[str]:
+    """Render sidebar controls and return the selected status filter."""
+    import streamlit as st
+
+    st.sidebar.header("Scoring Model")
+    st.sidebar.markdown(
+        f"""
+        **Composite weights**
+        - B2C Sync Compliance - **{WEIGHT_SYNC:.0%}**
+        - B2B Alert Triage - **{WEIGHT_TRIAGE:.0%}**
+        - Seat Utilization - **{WEIGHT_SEAT:.0%}**
+
+        **Categories**
+        - 🟢 Stable &nbsp;&ge; {STABLE_THRESHOLD:.0f}
+        - 🟠 At-Risk &nbsp;{AT_RISK_THRESHOLD:.0f}-{STABLE_THRESHOLD:.0f}
+        - 🔴 Critical &nbsp;&lt; {AT_RISK_THRESHOLD:.0f}
+        """
+    )
+    all_statuses = ["Stable", "At-Risk", "Critical"]
+    return st.sidebar.multiselect(
+        "Filter by status", options=all_statuses, default=all_statuses
+    )
+
+
+def render_kpis(scorecard: pd.DataFrame) -> None:
+    """Render the top KPI metric row."""
+    import streamlit as st
+
+    total = len(scorecard)
+    avg_health = scorecard["Health Score"].mean() if total else 0.0
+    avg_sync = scorecard["Sync Compliance %"].mean() if total else 0.0
+    at_risk = int((scorecard["Status"] == "At-Risk").sum())
+    critical = int((scorecard["Status"] == "Critical").sum())
+
+    col1, col2, col3, col4, col5 = st.columns(5)
+    col1.metric("Accounts", total)
+    col2.metric("Avg Health Score", f"{avg_health:.1f}")
+    col3.metric("Avg Sync Compliance", f"{avg_sync:.1f}%")
+    col4.metric("At-Risk", at_risk)
+    col5.metric("Critical", critical)
+
+
+def render_dashboard(scorecard: pd.DataFrame, status_filter: list[str]) -> None:
+    """Render KPIs, the health scorecard table, and a score chart."""
+    import streamlit as st
+
+    st.title("Patient Remote Monitoring - Customer Health")
+    st.caption(
+        "B2B2C account health across patient sync compliance, alert-triage "
+        f"responsiveness, and seat utilization - trailing {TELEMETRY_DAYS} days."
+    )
+
+    render_kpis(scorecard)
+    st.divider()
+
+    filtered = scorecard[scorecard["Status"].isin(status_filter)]
+
+    left, right = st.columns((3, 2))
+    with left:
+        st.subheader("Account Health Scorecard")
+        if filtered.empty:
+            st.info("No accounts match the selected status filter.")
+        else:
+            styled = (
+                filtered.style
+                .apply(_style_status_column, subset=["Status"])
+                .format(
+                    {
+                        "Sync Compliance %": "{:.1f}",
+                        "Triage Hours": "{:.1f}",
+                        "Seat Utilization %": "{:.1f}",
+                        "Sync Score": "{:.1f}",
+                        "Triage Score": "{:.1f}",
+                        "Health Score": "{:.1f}",
+                    }
+                )
+            )
+            st.dataframe(styled, use_container_width=True, hide_index=True)
+
+    with right:
+        st.subheader("Health Score by Account")
+        if not filtered.empty:
+            st.bar_chart(
+                filtered.set_index("Clinic")["Health Score"],
+                use_container_width=True,
+            )
+
+    # Surface the non-Stable accounts (worst first) for CS follow-up.
+    attention = (
+        scorecard[scorecard["Status"] != "Stable"].sort_values("Health Score")
+    )
+    if not attention.empty:
+        st.subheader("Accounts Needing Attention")
+        for _, row in attention.iterrows():
+            st.write(
+                f"**{row['Clinic']}** - {row['Status']} "
+                f"(health {row['Health Score']:.1f})"
+            )
+
+
+def main() -> None:
+    """Application entry point (executed by `streamlit run app.py`)."""
+    import streamlit as st
+
+    st.set_page_config(
+        page_title="PRM Customer Health",
+        page_icon="🩺",
+        layout="wide",
+    )
+    ensure_database(DB_PATH)                 # Auto-initialize + seed on startup.
+    scorecard = build_scorecard(DB_PATH)     # Aggregate telemetry -> scores.
+    status_filter = render_sidebar()         # Sidebar controls.
+    render_dashboard(scorecard, status_filter)
+
+
+# `streamlit run app.py` sets __name__ == "__main__", so the dashboard renders.
+# `import app` (e.g. from the test suite) does NOT trigger any Streamlit calls.
+if __name__ == "__main__":
+    main()
+
+
+# ===========================================================================
+# UNIT TESTS (pytest) - copy the block below into `test_app.py` beside app.py
+# ---------------------------------------------------------------------------
+# Run with:
+#     pip install pytest streamlit pandas
+#     pytest -q
+# ---------------------------------------------------------------------------
+#
+# """Unit tests for the PRM health-scoring engine (calculation boundaries)."""
+#
+# import pytest
+#
+# from app import (
+#     AT_RISK_THRESHOLD,
+#     STABLE_THRESHOLD,
+#     categorize,
+#     score_seat_utilization,
+#     score_sync,
+#     score_triage,
+#     weighted_health_score,
+# )
+#
+#
+# def test_sync_score_upper_clamp():
+#     # Compliance above 100% is clamped down to the 100 ceiling.
+#     assert score_sync(120.0) == 100.0
+#
+#
+# def test_sync_score_lower_clamp():
+#     # Negative compliance is clamped up to the 0 floor.
+#     assert score_sync(-10.0) == 0.0
+#
+#
+# def test_triage_score_meets_sla():
+#     # Triage at (or faster than) the SLA target earns a perfect score.
+#     assert score_triage(2.0) == 100.0
+#     assert score_triage(0.5) == 100.0
+#
+#
+# def test_triage_score_breaches_max():
+#     # Triage at (or beyond) the max threshold earns zero.
+#     assert score_triage(24.0) == 0.0
+#     assert score_triage(40.0) == 0.0
+#
+#
+# def test_triage_score_linear_midpoint():
+#     # 13h is the midpoint between the 2h target and 24h max -> 50.
+#     assert score_triage(13.0) == pytest.approx(50.0)
+#
+#
+# def test_seat_utilization_full_and_overflow():
+#     # Logins equal to seats -> 100; logins above seats stay clamped at 100.
+#     assert score_seat_utilization(10, 10) == 100.0
+#     assert score_seat_utilization(15, 10) == 100.0
+#
+#
+# def test_seat_utilization_handles_zero_seats():
+#     # Zero licensed seats must not divide by zero; it scores 0.
+#     assert score_seat_utilization(5, 0) == 0.0
+#
+#
+# def test_weighted_health_score_matches_manual():
+#     # 0.45*80 + 0.35*60 + 0.20*50 = 36 + 21 + 10 = 67.0
+#     assert weighted_health_score(80.0, 60.0, 50.0) == pytest.approx(67.0)
+#
+#
+# def test_categorize_stable_and_at_risk_boundaries():
+#     # 80 is the inclusive Stable boundary; just below falls to At-Risk.
+#     assert categorize(STABLE_THRESHOLD) == "Stable"
+#     assert categorize(79.99) == "At-Risk"
+#     assert categorize(AT_RISK_THRESHOLD) == "At-Risk"
+#
+#
+# def test_categorize_critical_boundary():
+#     # Anything below the At-Risk floor is Critical.
+#     assert categorize(59.99) == "Critical"
+#     assert categorize(0.0) == "Critical"

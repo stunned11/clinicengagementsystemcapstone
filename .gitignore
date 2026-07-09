@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtual environments
+.venv/
+.venv-prm/
+venv/
+env/
+
+# App data (auto-generated SQLite database)
+*.db
+
+# OS
+.DS_Store
