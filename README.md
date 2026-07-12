@@ -68,7 +68,8 @@ The database is seeded with **5 clinics × 30 days** of deterministic mock telem
 .
 ├── app.py                      # Streamlit app + scoring engine (+ commented test suite)
 ├── test_app.py                 # 10 pytest unit tests for the scoring boundaries
-├── requirements.txt            # streamlit, pandas, altair, pytest
+├── requirements.txt            # streamlit, pandas, altair, pytest — exact-pinned (see note below)
+├── runtime.txt                 # Pins the Python version Streamlit Cloud builds against
 ├── docs/
 │   └── design.md               # Software Design, Architecture & Testing Document
 ├── .github/workflows/test.yml  # CI: runs pytest on Python 3.10 / 3.11 / 3.12
@@ -77,7 +78,7 @@ The database is seeded with **5 clinics × 30 days** of deterministic mock telem
 
 ## Setup
 
-Requires **Python 3.9+** (CI validates on 3.10, 3.11, and 3.12).
+Requires **Python 3.9+** (CI validates on 3.10, 3.11, and 3.12). `requirements.txt` pins exact versions rather than ranges, and `runtime.txt` pins the Python version for Streamlit Cloud — a live deploy once crashed (`TypedDict` incompatibility, then a segfault) because unbounded `>=` pins and an unpinned Python version let the build silently pick up versions the app was never tested against.
 
 ```bash
 # 1. Create and activate a virtual environment
