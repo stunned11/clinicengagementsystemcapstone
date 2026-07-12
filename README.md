@@ -31,7 +31,7 @@ flowchart LR
     seed["seed_db<br/>5 clinics × 30 days"] --> db[("SQLite<br/>patient_monitoring.db")]
     db --> agg["build_scorecard<br/>30-day averages per clinic"]
     agg --> engine["Scoring engine<br/>sync · triage · seat → weighted"]
-    engine --> ui["Streamlit dashboard<br/>KPIs · scorecard · chart"]
+    engine --> ui["Streamlit dashboard<br/>KPIs · attention list · scorecard · chart"]
 ```
 
 ### Layers in `app.py`
@@ -40,7 +40,7 @@ flowchart LR
 - **Calculation engine (pure functions)** — `clamp`, `score_sync`, `score_triage`, `score_seat_utilization`, `weighted_health_score`, and `categorize`. Deterministic and dependency-free.
 - **Database layer** — `get_connection`, `init_db`, `seed_db`, and `ensure_database` auto-create and seed a mock SQLite database on first run (idempotent — it never double-seeds).
 - **Scorecard aggregation** — `build_scorecard` averages each clinic's trailing 30 days of telemetry and applies the engine.
-- **Presentation layer** — `render_sidebar`, `render_kpis`, `render_dashboard`, and `main` build the interactive dashboard.
+- **Presentation layer** — `render_sidebar`, `render_kpis`, `render_attention`, `render_health_chart`, `render_dashboard`, and `main` build the interactive dashboard. Accounts are surfaced worst-health-first throughout, with a prioritized attention list (filtered and sorted by status, then plan tier) rendered above the full scorecard and chart.
 
 The Streamlit UI is guarded behind `if __name__ == "__main__": main()`, so `import app` (used by the tests) never triggers any rendering.
 
@@ -68,7 +68,7 @@ The database is seeded with **5 clinics × 30 days** of deterministic mock telem
 .
 ├── app.py                      # Streamlit app + scoring engine (+ commented test suite)
 ├── test_app.py                 # 10 pytest unit tests for the scoring boundaries
-├── requirements.txt            # streamlit, pandas, pytest
+├── requirements.txt            # streamlit, pandas, altair, pytest
 ├── docs/
 │   └── design.md               # Software Design, Architecture & Testing Document
 ├── .github/workflows/test.yml  # CI: runs pytest on Python 3.10 / 3.11 / 3.12

@@ -60,6 +60,16 @@ AT_RISK_THRESHOLD = 60.0   # 60 <= score < 80  -> At-Risk
 # Deterministic seed so the mock dataset is reproducible across runs.
 RANDOM_SEED = 42
 
+# Trend classification: a recent-vs-prior health-score delta inside this band
+# reads as "flat" rather than a real improvement/decline.
+TREND_FLAT_THRESHOLD = 2.0
+
+# Sort priority for the attention list: worse status first, and within a
+# status, higher-value plans first (an Enterprise account slipping is a
+# bigger deal than a Starter account at the same health score).
+STATUS_PRIORITY = {"Critical": 0, "At-Risk": 1, "Stable": 2}
+PLAN_PRIORITY = {"Enterprise": 0, "Growth": 1, "Starter": 2}
+
 # Static clinic roster used to seed the database. Each profile defines the
 # behavioral "center of gravity" for that account's generated telemetry:
 #   (name, plan_tier, licensed_seats, sync_mean, triage_mean_hours, login_ratio)
@@ -125,6 +135,15 @@ def categorize(score: float) -> str:
     if score >= AT_RISK_THRESHOLD:
         return "At-Risk"
     return "Critical"
+
+
+def trend_label(delta: float) -> str:
+    """Convert a recent-vs-prior health-score delta into a compact label."""
+    if delta >= TREND_FLAT_THRESHOLD:
+        return f"↑ +{delta:.1f}"
+    if delta <= -TREND_FLAT_THRESHOLD:
+        return f"↓ {delta:.1f}"
+    return "→ flat"
 
 
 # ---------------------------------------------------------------------------
@@ -217,51 +236,73 @@ def ensure_database(db_path: str = DB_PATH) -> None:
 # ---------------------------------------------------------------------------
 
 def build_scorecard(db_path: str = DB_PATH) -> pd.DataFrame:
-    """Aggregate telemetry per clinic and compute weighted health scores."""
+    """Aggregate telemetry per clinic, compute weighted health scores, and
+    derive a trend (recent-half vs. prior-half average) for each account.
+
+    Returned rows are sorted worst-health-first so downstream views default
+    to surfacing risk instead of alphabetical order.
+    """
     import pandas as pd
 
     conn = get_connection(db_path)
     try:
-        rows = conn.execute(
-            """
-            SELECT
-                c.name                          AS clinic,
-                c.plan_tier                     AS plan_tier,
-                c.licensed_seats                AS licensed_seats,
-                AVG(t.patient_sync_compliance)  AS avg_sync,
-                AVG(t.alert_triage_hours)       AS avg_triage_hours,
-                AVG(t.clinician_login_count)    AS avg_logins
-            FROM clinics c
-            JOIN telemetry t ON t.clinic_id = c.id
-            GROUP BY c.id
-            ORDER BY c.name
-            """
-        ).fetchall()
+        clinics = pd.read_sql_query(
+            "SELECT id, name, plan_tier, licensed_seats FROM clinics", conn
+        )
+        telemetry = pd.read_sql_query("SELECT * FROM telemetry", conn)
     finally:
         conn.close()
 
+    telemetry = telemetry.merge(clinics, left_on="clinic_id", right_on="id")
+    telemetry["metric_date"] = pd.to_datetime(telemetry["metric_date"])
+    telemetry["health_row"] = telemetry.apply(
+        lambda r: weighted_health_score(
+            score_sync(r["patient_sync_compliance"]),
+            score_triage(r["alert_triage_hours"]),
+            score_seat_utilization(r["clinician_login_count"], r["licensed_seats"]),
+        ),
+        axis=1,
+    )
+
     records = []
-    for r in rows:
-        sync_score = score_sync(r["avg_sync"])
-        triage_score = score_triage(r["avg_triage_hours"])
-        seat_score = score_seat_utilization(r["avg_logins"], r["licensed_seats"])
+    for _, group in telemetry.groupby("clinic_id"):
+        group = group.sort_values("metric_date")
+        midpoint = len(group) // 2
+        older_half, recent_half = group.iloc[:midpoint], group.iloc[midpoint:]
+        trend_delta = (
+            recent_half["health_row"].mean() - older_half["health_row"].mean()
+            if len(older_half) and len(recent_half)
+            else 0.0
+        )
+
+        clinic_row = group.iloc[0]
+        avg_sync = group["patient_sync_compliance"].mean()
+        avg_triage_hours = group["alert_triage_hours"].mean()
+        avg_logins = group["clinician_login_count"].mean()
+        licensed_seats = clinic_row["licensed_seats"]
+
+        sync_score = score_sync(avg_sync)
+        triage_score = score_triage(avg_triage_hours)
+        seat_score = score_seat_utilization(avg_logins, licensed_seats)
         health = weighted_health_score(sync_score, triage_score, seat_score)
 
         records.append(
             {
-                "Clinic": r["clinic"],
-                "Plan": r["plan_tier"],
-                "Sync Compliance %": round(r["avg_sync"], 1),
-                "Triage Hours": round(r["avg_triage_hours"], 1),
+                "Clinic": clinic_row["name"],
+                "Plan": clinic_row["plan_tier"],
+                "Sync Compliance %": round(avg_sync, 1),
+                "Triage Hours": round(avg_triage_hours, 1),
                 "Seat Utilization %": round(seat_score, 1),
                 "Sync Score": round(sync_score, 1),
                 "Triage Score": round(triage_score, 1),
                 "Health Score": health,
+                "Trend": trend_label(trend_delta),
                 "Status": categorize(health),
             }
         )
 
-    return pd.DataFrame.from_records(records)
+    scorecard = pd.DataFrame.from_records(records)
+    return scorecard.sort_values("Health Score", ascending=True).reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------
@@ -282,9 +323,19 @@ def _style_status_column(column: pd.Series) -> list[str]:
 
 
 def render_sidebar() -> list[str]:
-    """Render sidebar controls and return the selected status filter."""
+    """Render sidebar controls and return the selected status filter.
+
+    The filter comes first since it's the control used every session;
+    the scoring methodology below it is static reference material.
+    """
     import streamlit as st
 
+    all_statuses = ["Stable", "At-Risk", "Critical"]
+    status_filter = st.sidebar.multiselect(
+        "Filter by status", options=all_statuses, default=all_statuses
+    )
+
+    st.sidebar.divider()
     st.sidebar.header("Scoring Model")
     st.sidebar.markdown(
         f"""
@@ -299,14 +350,23 @@ def render_sidebar() -> list[str]:
         - 🔴 Critical &nbsp;&lt; {AT_RISK_THRESHOLD:.0f}
         """
     )
-    all_statuses = ["Stable", "At-Risk", "Critical"]
-    return st.sidebar.multiselect(
-        "Filter by status", options=all_statuses, default=all_statuses
+    return status_filter
+
+
+def _metric_card(label: str, value: str, style: str = "") -> str:
+    """HTML metric tile so severity counts can carry the same red/amber
+    color language as the Status column, instead of a flat st.metric()."""
+    base = "padding: 0.6rem 0.5rem; border-radius: 0.5rem; text-align: center;"
+    return (
+        f'<div style="{base}{style}">'
+        f'<div style="font-size: 1.6rem; font-weight: 700; line-height: 1.2;">{value}</div>'
+        f'<div style="font-size: 0.8rem; opacity: 0.85;">{label}</div>'
+        f"</div>"
     )
 
 
 def render_kpis(scorecard: pd.DataFrame) -> None:
-    """Render the top KPI metric row."""
+    """Render the top KPI row, most urgent counts first (left to right)."""
     import streamlit as st
 
     total = len(scorecard)
@@ -314,17 +374,87 @@ def render_kpis(scorecard: pd.DataFrame) -> None:
     avg_sync = scorecard["Sync Compliance %"].mean() if total else 0.0
     at_risk = int((scorecard["Status"] == "At-Risk").sum())
     critical = int((scorecard["Status"] == "Critical").sum())
+    neutral_style = "background-color: #333; color: white;"
 
     col1, col2, col3, col4, col5 = st.columns(5)
-    col1.metric("Accounts", total)
-    col2.metric("Avg Health Score", f"{avg_health:.1f}")
-    col3.metric("Avg Sync Compliance", f"{avg_sync:.1f}%")
-    col4.metric("At-Risk", at_risk)
-    col5.metric("Critical", critical)
+    col1.markdown(
+        _metric_card(
+            "Critical", str(critical),
+            STATUS_STYLES["Critical"] if critical else neutral_style,
+        ),
+        unsafe_allow_html=True,
+    )
+    col2.markdown(
+        _metric_card(
+            "At-Risk", str(at_risk),
+            STATUS_STYLES["At-Risk"] if at_risk else neutral_style,
+        ),
+        unsafe_allow_html=True,
+    )
+    col3.metric("Accounts", total)
+    col4.metric("Avg Health Score", f"{avg_health:.1f}")
+    col5.metric("Avg Sync Compliance", f"{avg_sync:.1f}%")
+
+
+def render_attention(scorecard: pd.DataFrame, status_filter: list[str]) -> None:
+    """Render the prioritized action list: filtered like the rest of the
+    page, worst status first, and within a status, higher-value plans
+    first so a slipping Enterprise account outranks a Starter account at
+    the same health score.
+    """
+    import streamlit as st
+
+    attention = scorecard[
+        (scorecard["Status"] != "Stable") & (scorecard["Status"].isin(status_filter))
+    ].copy()
+
+    st.subheader("Accounts Needing Attention")
+    if attention.empty:
+        st.success("No accounts currently need attention.")
+        return
+
+    attention["_status_rank"] = attention["Status"].map(STATUS_PRIORITY)
+    attention["_plan_rank"] = attention["Plan"].map(PLAN_PRIORITY).fillna(99)
+    attention = attention.sort_values(["_status_rank", "_plan_rank", "Health Score"])
+
+    display_cols = ["Clinic", "Plan", "Status", "Health Score", "Trend"]
+    styled = (
+        attention[display_cols]
+        .style.apply(_style_status_column, subset=["Status"])
+        .format({"Health Score": "{:.1f}"})
+    )
+    st.dataframe(styled, use_container_width=True, hide_index=True)
+
+
+def render_health_chart(filtered: pd.DataFrame) -> None:
+    """Bar chart colored by Status so it reads consistently with the table,
+    ordered worst-to-best to match the scorecard's default sort."""
+    import altair as alt
+    import streamlit as st
+
+    chart = (
+        alt.Chart(filtered)
+        .mark_bar()
+        .encode(
+            x=alt.X("Clinic:N", sort=filtered["Clinic"].tolist(), title=None),
+            y=alt.Y("Health Score:Q"),
+            color=alt.Color(
+                "Status:N",
+                scale=alt.Scale(
+                    domain=["Critical", "At-Risk", "Stable"],
+                    range=["#b71c1c", "#b26a00", "#1b5e20"],
+                ),
+                legend=alt.Legend(title="Status"),
+            ),
+            tooltip=["Clinic", "Plan", "Health Score", "Status", "Trend"],
+        )
+    )
+    st.altair_chart(chart, use_container_width=True)
 
 
 def render_dashboard(scorecard: pd.DataFrame, status_filter: list[str]) -> None:
-    """Render KPIs, the health scorecard table, and a score chart."""
+    """Render KPIs, the prioritized attention list, then the full scorecard
+    table and chart as supporting detail."""
     import streamlit as st
 
     st.title("Patient Remote Monitoring - Customer Health")
@@ -336,11 +466,14 @@ def render_dashboard(scorecard: pd.DataFrame, status_filter: list[str]) -> None:
     render_kpis(scorecard)
     st.divider()
 
+    render_attention(scorecard, status_filter)
+    st.divider()
+
     filtered = scorecard[scorecard["Status"].isin(status_filter)]
 
     left, right = st.columns((3, 2))
     with left:
-        st.subheader("Account Health Scorecard")
+        st.subheader("Full Account Scorecard")
         if filtered.empty:
             st.info("No accounts match the selected status filter.")
         else:
@@ -363,22 +496,7 @@ def render_dashboard(scorecard: pd.DataFrame, status_filter: list[str]) -> None:
     with right:
         st.subheader("Health Score by Account")
         if not filtered.empty:
-            st.bar_chart(
-                filtered.set_index("Clinic")["Health Score"],
-                use_container_width=True,
-            )
-
-    # Surface the non-Stable accounts (worst first) for CS follow-up.
-    attention = (
-        scorecard[scorecard["Status"] != "Stable"].sort_values("Health Score")
-    )
-    if not attention.empty:
-        st.subheader("Accounts Needing Attention")
-        for _, row in attention.iterrows():
-            st.write(
-                f"**{row['Clinic']}** - {row['Status']} "
-                f"(health {row['Health Score']:.1f})"
-            )
+            render_health_chart(filtered)
 
 
 def main() -> None:
