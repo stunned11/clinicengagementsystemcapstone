@@ -3,6 +3,8 @@
 A single-file [Streamlit](https://streamlit.io/) application for a **B2B2C Patient Remote Monitoring** company. It scores the health of each clinic (a B2B customer) from daily telemetry and surfaces which accounts are **Stable**, **At-Risk**, or **Critical** so Customer Success can prioritize outreach.
 
 **🔗 Live demo:** [clinicengagementsystemcapstone.streamlit.app](https://clinicengagementsystemcapstone.streamlit.app)
+**📋 Task board:** [GitHub Projects — Clinic Engagement System Kanban](https://github.com/users/stunned11/projects/2) (also mirrored as [docs/task-board.md](docs/task-board.md))
+**📐 Design & testing document:** [docs/design.md](docs/design.md)
 
 [![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://clinicengagementsystemcapstone.streamlit.app)
 
@@ -71,7 +73,8 @@ The database is seeded with **5 clinics × 30 days** of deterministic mock telem
 ├── requirements.txt            # streamlit, pandas, altair, pytest — exact-pinned (see note below)
 ├── runtime.txt                 # Pins the Python version Streamlit Cloud builds against
 ├── docs/
-│   └── design.md               # Software Design, Architecture & Testing Document
+│   ├── design.md               # Software Design, Architecture & Testing Document
+│   └── task-board.md           # Task board mirror (source of truth: GitHub Projects #2)
 ├── .github/workflows/test.yml  # CI: runs pytest on Python 3.10 / 3.11 / 3.12
 └── README.md
 ```
