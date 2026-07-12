@@ -1,9 +1,20 @@
 # Project Task Board
 
 **Project:** Clinic Engagement System — Customer Health Scoring
-**Last updated:** 2026-07-12 · **Release:** v1.1.0
+**Last updated:** 2026-07-12 · **Release:** v1.1.1
 
-This board tracks all agreed user stories and tasks. It is organized as a Kanban flow (**Backlog → In Progress → In Review → Done**) with MoSCoW priorities and story-point estimates. Epics A–F are delivered in v1.0.0, with a v1.1.0 revision to Epic C (below); Epic G is post-v1 roadmap work.
+This board tracks all agreed user stories and tasks. It is organized as a Kanban flow (**Backlog → In Progress → In Review → Done**) with MoSCoW priorities and story-point estimates. Epics A–F are delivered in v1.0.0, with v1.1.0 and v1.1.1 revisions to Epic C (below); Epic G is post-v1 roadmap work.
+
+## v1.1.1 — Visual design pass (2026-07-12)
+
+A follow-up review found the dashboard's visual language was inconsistent — mismatched KPI components (custom HTML blocks next to default `st.metric()`), solid saturated status colors picked by eye rather than validated for accessibility, and no dark-mode verification. This revision replaces that with one small design system:
+
+- **C1** — all five KPI tiles now share one card component instead of two mismatched styles.
+- **C2** — Status column moved from solid color blocks to a tinted badge pattern (colored bullet + text on a soft tint).
+- **C4** — chart bars gained rounded tops, hairline gridlines, and direct value labels.
+- **C8** *(new)* — the design system itself: shared CSS tokens, a pre-validated accessible status palette applied consistently across KPI accents/badges/chart, card-framed sections, verified in both light and dark themes.
+
+See issues [#9](https://github.com/stunned11/clinicengagementsystemcapstone/issues/9), [#10](https://github.com/stunned11/clinicengagementsystemcapstone/issues/10), [#12](https://github.com/stunned11/clinicengagementsystemcapstone/issues/12), [#30](https://github.com/stunned11/clinicengagementsystemcapstone/issues/30) and commit `0365bf3`.
 
 ## v1.1.0 — CSM-workflow revision (2026-07-12)
 
@@ -21,15 +32,15 @@ See issues [#9](https://github.com/stunned11/clinicengagementsystemcapstone/issu
 
 | Backlog | In Progress | In Review | Done |
 | --- | --- | --- | --- |
-| G1, G2, G3, G4 | — | — | A1, A2, A3, B1, B2, B3, B4, B5, C1, C2, C3, C4, C5, C6, C7, D1, D2, E1, E2, E3, E4, F1, F2 (+ tasks T1, T2) |
+| G1, G2, G3, G4 | — | — | A1, A2, A3, B1, B2, B3, B4, B5, C1, C2, C3, C4, C5, C6, C7, C8, D1, D2, E1, E2, E3, E4, F1, F2 (+ tasks T1, T2) |
 
 ## Summary
 
 | Status | Stories | Story points |
 | --- | --- | --- |
-| Done | 23 | 60 |
+| Done | 24 | 63 |
 | Backlog (Epic G) | 4 | 26 |
-| **Total** | **27** | **86** |
+| **Total** | **28** | **89** |
 
 Tasks (implementation work under stories): 2, both Done.
 
@@ -46,13 +57,14 @@ Tasks (implementation work under stories): 2, both Done.
 | B3 | B — Scoring Engine | Story | Seat-utilization sub-score (zero-seat safe) | Must | 2 | S1 | ✅ Done |
 | B4 | B — Scoring Engine | Story | Weighted composite (45/35/20) | Must | 3 | S1 | ✅ Done |
 | B5 | B — Scoring Engine | Story | Categorize Stable / At-Risk / Critical (80 / 60) | Must | 2 | S1 | ✅ Done |
-| C1 | C — Dashboard | Story | Portfolio KPI row (Critical/At-Risk lead, severity-colored) | Should | 3 | S2 | ✅ Done |
-| C2 | C — Dashboard | Story | Color-coded scorecard table | Must | 3 | S2 | ✅ Done |
+| C1 | C — Dashboard | Story | Portfolio KPI row — unified card component, severity-colored | Should | 3 | S2 | ✅ Done |
+| C2 | C — Dashboard | Story | Status column as a tinted, accessible-palette badge | Must | 3 | S2 | ✅ Done |
 | C3 | C — Dashboard | Story | Status filter (live) — governs table, chart, and attention list | Should | 2 | S2 | ✅ Done |
-| C4 | C — Dashboard | Story | Health-score-by-account chart, colored by Status | Could | 2 | S2 | ✅ Done |
+| C4 | C — Dashboard | Story | Health-score-by-account chart — status-colored, rounded bars, direct labels | Could | 2 | S2 | ✅ Done |
 | C5 | C — Dashboard | Story | "Accounts needing attention" list — top of page, plan-tier ranked | Should | 2 | S2 | ✅ Done |
 | C6 | C — Dashboard | Story | Scoring-model transparency sidebar | Could | 1 | S2 | ✅ Done |
 | C7 | C — Dashboard | Story | Recent-vs-prior trend indicator per account | Should | 2 | S4 | ✅ Done |
+| C8 | C — Dashboard | Story | Accessible visual design system (validated palette, dark-mode) | Should | 3 | S5 | ✅ Done |
 | D1 | D — Quality & Testing | Story | 10 boundary-value unit tests | Must | 5 | S1 | ✅ Done |
 | D2 | D — Quality & Testing | Story | Framework-free engine (lazy imports) for fast tests | Should | 3 | S2 | ✅ Done |
 | E1 | E — CI/CD & Deployment | Story | CI on push/PR across Python 3.10/3.11/3.12 | Must | 3 | S3 | ✅ Done |
@@ -72,6 +84,6 @@ A story is Done only when: code merged to `main`, unit tests updated and passing
 
 ## Legend
 - **Priority (MoSCoW):** Must / Should / Could / Won't (this release).
-- **Sprint:** S1 Foundation & Engine · S2 Experience & Test Hardening · S3 Ship & Document · S4 CSM-Workflow Revision (v1.1.0).
+- **Sprint:** S1 Foundation & Engine · S2 Experience & Test Hardening · S3 Ship & Document · S4 CSM-Workflow Revision (v1.1.0) · S5 Visual Design Pass (v1.1.1).
 - **Status:** ✅ Done · 🔄 In Progress · 👀 In Review · ⬜ Backlog.
 - **Epic G** is documented roadmap work and is intentionally **not implemented** in v1.0.0.
