@@ -1,9 +1,21 @@
 # Project Task Board
 
 **Project:** Clinic Engagement System — Customer Health Scoring
-**Last updated:** 2026-07-12 · **Release:** v1.1.1
+**Last updated:** 2026-07-12 · **Release:** v1.1.2
 
-This board tracks all agreed user stories and tasks. It is organized as a Kanban flow (**Backlog → In Progress → In Review → Done**) with MoSCoW priorities and story-point estimates. Epics A–F are delivered in v1.0.0, with v1.1.0 and v1.1.1 revisions to Epic C (below); Epic G is post-v1 roadmap work.
+This board tracks all agreed user stories and tasks. It is organized as a Kanban flow (**Backlog → In Progress → In Review → Done**) with MoSCoW priorities and story-point estimates. Epics A–F are delivered in v1.0.0, with v1.1.0/v1.1.1 revisions to Epic C and a v1.1.2 addition to Epic E (below); Epic G is post-v1 roadmap work.
+
+## v1.1.2 — Deploy reliability incident (2026-07-12)
+
+A routine push (the v1.1.1 visual-design commit) crashed the live app. Root cause was three layers deep, and each layer was verified, not guessed:
+
+1. Unbounded `>=` pins in `requirements.txt` let Streamlit Cloud install pandas 3.0.3 fresh → a native **segmentation fault** on every boot.
+2. Exact-pinning to pandas 2.3.3 / altair 5.5.0 fixed the segfault but surfaced a real `TypeError`: altair 5.5.0's `TypedDict(closed=True)` usage isn't compatible with **Python 3.14** — what Streamlit Cloud actually runs, a version neither CI (3.10–3.12) nor local dev had ever covered. A `runtime.txt` pin to Python 3.13 didn't help; Streamlit Cloud doesn't re-read that file on a simple reboot for an already-created app.
+3. **Fix:** `altair==6.2.2` (explicit Python 3.14 support). Verified by installing a real Python 3.14.6 interpreter locally (via Homebrew, matching Streamlit Cloud's own traceback path), reproducing the exact crash, then confirming a from-scratch venv with the new pin renders with zero errors — confirmed again on the live URL by screenshot after redeploy.
+
+- **E5** *(new)* — `requirements.txt` now pins exact versions (not ranges) for every dependency; `runtime.txt` pins Python 3.14 explicitly, matching what's actually verified and actually running.
+
+See issue [#31](https://github.com/stunned11/clinicengagementsystemcapstone/issues/31) and commits `7d1c8cb`, `fa334af`, `183bbae`.
 
 ## v1.1.1 — Visual design pass (2026-07-12)
 
@@ -32,15 +44,15 @@ See issues [#9](https://github.com/stunned11/clinicengagementsystemcapstone/issu
 
 | Backlog | In Progress | In Review | Done |
 | --- | --- | --- | --- |
-| G1, G2, G3, G4 | — | — | A1, A2, A3, B1, B2, B3, B4, B5, C1, C2, C3, C4, C5, C6, C7, C8, D1, D2, E1, E2, E3, E4, F1, F2 (+ tasks T1, T2) |
+| G1, G2, G3, G4 | — | — | A1, A2, A3, B1, B2, B3, B4, B5, C1, C2, C3, C4, C5, C6, C7, C8, D1, D2, E1, E2, E3, E4, E5, F1, F2 (+ tasks T1, T2) |
 
 ## Summary
 
 | Status | Stories | Story points |
 | --- | --- | --- |
-| Done | 24 | 63 |
+| Done | 25 | 68 |
 | Backlog (Epic G) | 4 | 26 |
-| **Total** | **28** | **89** |
+| **Total** | **29** | **94** |
 
 Tasks (implementation work under stories): 2, both Done.
 
@@ -72,6 +84,7 @@ Tasks (implementation work under stories): 2, both Done.
 | E3 | E — CI/CD & Deployment | Story | Public live deployment (Streamlit Cloud) | Must | 3 | S3 | ✅ Done |
 | E4 | E — CI/CD & Deployment | Story | Auto-redeploy (CD) on push to `main` | Should | 2 | S3 | ✅ Done |
 | T1 | E — CI/CD & Deployment | Task | Create annotated `v1.0.0` release tag (under E4) | — | — | S3 | ✅ Done |
+| E5 | E — CI/CD & Deployment | Story | Deploy reliability — exact-pinned deps + runtime.txt (post-incident) | Must | 5 | S6 | ✅ Done |
 | F1 | F — Governance & Docs | Story | README (setup / run / deploy) | Must | 3 | S3 | ✅ Done |
 | F2 | F — Governance & Docs | Story | Design & testing document | Must | 5 | S3 | ✅ Done |
 | G1 | G — Interoperability (roadmap) | Story | Ingest telemetry as FHIR `Observation` via adapter | Won't (v1) | 8 | — | ⬜ Backlog |
@@ -84,6 +97,6 @@ A story is Done only when: code merged to `main`, unit tests updated and passing
 
 ## Legend
 - **Priority (MoSCoW):** Must / Should / Could / Won't (this release).
-- **Sprint:** S1 Foundation & Engine · S2 Experience & Test Hardening · S3 Ship & Document · S4 CSM-Workflow Revision (v1.1.0) · S5 Visual Design Pass (v1.1.1).
+- **Sprint:** S1 Foundation & Engine · S2 Experience & Test Hardening · S3 Ship & Document · S4 CSM-Workflow Revision (v1.1.0) · S5 Visual Design Pass (v1.1.1) · S6 Deploy Reliability Incident (v1.1.2).
 - **Status:** ✅ Done · 🔄 In Progress · 👀 In Review · ⬜ Backlog.
 - **Epic G** is documented roadmap work and is intentionally **not implemented** in v1.0.0.
