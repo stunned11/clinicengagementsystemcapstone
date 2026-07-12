@@ -1,5 +1,5 @@
 streamlit==1.59.1
 pandas==2.3.3
-altair==5.5.0
+altair==6.2.2
 pytest==8.4.2
 typing_extensions>=4.16,<5.0

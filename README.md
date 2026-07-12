@@ -78,7 +78,7 @@ The database is seeded with **5 clinics × 30 days** of deterministic mock telem
 
 ## Setup
 
-Requires **Python 3.9+** (CI validates on 3.10, 3.11, and 3.12). `requirements.txt` pins exact versions rather than ranges, and `runtime.txt` pins the Python version for Streamlit Cloud — a live deploy once crashed (`TypedDict` incompatibility, then a segfault) because unbounded `>=` pins and an unpinned Python version let the build silently pick up versions the app was never tested against.
+Requires **Python 3.9+** (CI validates on 3.10, 3.11, and 3.12). `requirements.txt` pins exact versions rather than ranges: a live deploy once crashed (segfault, then a `TypedDict` `TypeError`) because unbounded `>=` pins let a fresh Streamlit Cloud build silently pick up pandas/altair major versions this app was never tested against, on a Python version (3.14) neither CI nor local dev covered. `altair==6.2.2` is required for Python 3.14 compatibility (`altair<6` breaks on 3.14 with a `TypedDict(closed=True)` incompatibility); `runtime.txt` pins Python 3.14 explicitly so the pairing stays intentional rather than accidental.
 
 ```bash
 # 1. Create and activate a virtual environment
