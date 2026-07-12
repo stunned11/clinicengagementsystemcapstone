@@ -309,17 +309,111 @@ def build_scorecard(db_path: str = DB_PATH) -> pd.DataFrame:
 # Streamlit presentation layer
 # ---------------------------------------------------------------------------
 
-# CSS applied to each category for at-a-glance status coloring in the table.
-STATUS_STYLES = {
-    "Stable": "background-color: #1b5e20; color: white;",
-    "At-Risk": "background-color: #b26a00; color: white;",
-    "Critical": "background-color: #b71c1c; color: white;",
+# Status colors: fixed, never reused for anything else on the page, so a
+# status color always means the same thing wherever it appears.
+STATUS_HEX = {
+    "Stable": "#0ca30c",
+    "At-Risk": "#fab219",
+    "Critical": "#d03b3b",
 }
+
+# Low-opacity tints of the same hues, for cell/badge backgrounds — a wash,
+# not a saturated block, so text stays the loud element.
+STATUS_TINT = {
+    "Stable": "rgba(12, 163, 12, 0.14)",
+    "At-Risk": "rgba(250, 178, 25, 0.22)",
+    "Critical": "rgba(208, 59, 59, 0.14)",
+}
+
+# Global styling: one small design system (tokens + a KPI card + table
+# polish) so the whole page reads as one surface instead of a stack of
+# mismatched Streamlit defaults and ad hoc inline styles.
+APP_CSS = """
+<style>
+:root {
+    --prm-surface: #ffffff;
+    --prm-border: rgba(11, 11, 11, 0.10);
+    --prm-text-primary: #0b0b0b;
+    --prm-text-secondary: #52514e;
+    --prm-accent-neutral: #c3c2b7;
+}
+@media (prefers-color-scheme: dark) {
+    :root {
+        --prm-surface: #1a1a19;
+        --prm-border: rgba(255, 255, 255, 0.14);
+        --prm-text-primary: #ffffff;
+        --prm-text-secondary: #c3c2b7;
+        --prm-accent-neutral: #383835;
+    }
+}
+
+html, body, [class*="css"] {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.prm-kpi {
+    background: var(--prm-surface);
+    border: 1px solid var(--prm-border);
+    border-left: 4px solid var(--kpi-accent, var(--prm-accent-neutral));
+    border-radius: 10px;
+    padding: 14px 16px;
+}
+.prm-kpi__label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--prm-text-secondary);
+    margin-bottom: 6px;
+}
+.prm-kpi__dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--kpi-accent, var(--prm-accent-neutral));
+    flex: 0 0 auto;
+}
+.prm-kpi__value {
+    font-size: 1.85rem;
+    font-weight: 700;
+    color: var(--prm-text-primary);
+    line-height: 1.15;
+}
+
+[data-testid="stDataFrame"] { border-radius: 10px; overflow: hidden; }
+</style>
+"""
+
+
+def _kpi_card(label: str, value: str, accent: str | None = None) -> str:
+    """HTML for one KPI tile. `accent` colors the left border + identity dot;
+    left unset, the tile reads as neutral so color stays reserved for the
+    two counts that actually need to grab attention (Critical, At-Risk)."""
+    style = f"--kpi-accent: {accent};" if accent else ""
+    return (
+        f'<div class="prm-kpi" style="{style}">'
+        f'<div class="prm-kpi__label"><span class="prm-kpi__dot"></span>{label}</div>'
+        f'<div class="prm-kpi__value">{value}</div>'
+        f"</div>"
+    )
 
 
 def _style_status_column(column: pd.Series) -> list[str]:
-    """Return per-cell CSS for the Status column (helper for Styler.apply)."""
-    return [STATUS_STYLES.get(value, "") for value in column]
+    """Return per-cell CSS for the Status column (helper for Styler.apply):
+    a tinted background with the status hue carried in the text, the same
+    soft-badge pattern issue trackers use rather than a solid color block."""
+    return [
+        f"background-color: {STATUS_TINT.get(v, '')}; "
+        f"color: {STATUS_HEX.get(v, '')}; font-weight: 600;"
+        for v in column
+    ]
+
+
+def _format_status_badge(value: str) -> str:
+    """Prefix a status value with a colored bullet for display — an icon
+    alongside the label, so status is never conveyed by color alone."""
+    return f"● {value}"
 
 
 def render_sidebar() -> list[str]:
@@ -353,20 +447,11 @@ def render_sidebar() -> list[str]:
     return status_filter
 
 
-def _metric_card(label: str, value: str, style: str = "") -> str:
-    """HTML metric tile so severity counts can carry the same red/amber
-    color language as the Status column, instead of a flat st.metric()."""
-    base = "padding: 0.6rem 0.5rem; border-radius: 0.5rem; text-align: center;"
-    return (
-        f'<div style="{base}{style}">'
-        f'<div style="font-size: 1.6rem; font-weight: 700; line-height: 1.2;">{value}</div>'
-        f'<div style="font-size: 0.8rem; opacity: 0.85;">{label}</div>'
-        f"</div>"
-    )
-
-
 def render_kpis(scorecard: pd.DataFrame) -> None:
-    """Render the top KPI row, most urgent counts first (left to right)."""
+    """Render the top KPI row as one consistent card component, most urgent
+    counts first (left to right). Only Critical/At-Risk carry a color accent
+    — color stays reserved for what's actually urgent instead of decorating
+    every tile."""
     import streamlit as st
 
     total = len(scorecard)
@@ -374,26 +459,16 @@ def render_kpis(scorecard: pd.DataFrame) -> None:
     avg_sync = scorecard["Sync Compliance %"].mean() if total else 0.0
     at_risk = int((scorecard["Status"] == "At-Risk").sum())
     critical = int((scorecard["Status"] == "Critical").sum())
-    neutral_style = "background-color: #333; color: white;"
 
-    col1, col2, col3, col4, col5 = st.columns(5)
-    col1.markdown(
-        _metric_card(
-            "Critical", str(critical),
-            STATUS_STYLES["Critical"] if critical else neutral_style,
-        ),
-        unsafe_allow_html=True,
-    )
-    col2.markdown(
-        _metric_card(
-            "At-Risk", str(at_risk),
-            STATUS_STYLES["At-Risk"] if at_risk else neutral_style,
-        ),
-        unsafe_allow_html=True,
-    )
-    col3.metric("Accounts", total)
-    col4.metric("Avg Health Score", f"{avg_health:.1f}")
-    col5.metric("Avg Sync Compliance", f"{avg_sync:.1f}%")
+    tiles = [
+        ("Critical", str(critical), STATUS_HEX["Critical"] if critical else None),
+        ("At-Risk", str(at_risk), STATUS_HEX["At-Risk"] if at_risk else None),
+        ("Accounts", str(total), None),
+        ("Avg health score", f"{avg_health:.1f}", None),
+        ("Avg sync compliance", f"{avg_sync:.1f}%", None),
+    ]
+    for col, (label, value, accent) in zip(st.columns(5), tiles):
+        col.markdown(_kpi_card(label, value, accent), unsafe_allow_html=True)
 
 
 def render_attention(scorecard: pd.DataFrame, status_filter: list[str]) -> None:
@@ -421,35 +496,56 @@ def render_attention(scorecard: pd.DataFrame, status_filter: list[str]) -> None:
     styled = (
         attention[display_cols]
         .style.apply(_style_status_column, subset=["Status"])
-        .format({"Health Score": "{:.1f}"})
+        .format({"Health Score": "{:.1f}", "Status": _format_status_badge})
     )
-    st.dataframe(styled, use_container_width=True, hide_index=True)
+    with st.container(border=True):
+        st.dataframe(styled, use_container_width=True, hide_index=True)
 
 
 def render_health_chart(filtered: pd.DataFrame) -> None:
     """Bar chart colored by Status so it reads consistently with the table,
-    ordered worst-to-best to match the scorecard's default sort."""
+    ordered worst-to-best to match the scorecard's default sort. Thin,
+    rounded bars with hairline gridlines and direct value labels — mark
+    specs kept restrained so the data is the loud element, not the chrome."""
     import altair as alt
     import streamlit as st
 
-    chart = (
-        alt.Chart(filtered)
-        .mark_bar()
-        .encode(
-            x=alt.X("Clinic:N", sort=filtered["Clinic"].tolist(), title=None),
-            y=alt.Y("Health Score:Q"),
-            color=alt.Color(
-                "Status:N",
-                scale=alt.Scale(
-                    domain=["Critical", "At-Risk", "Stable"],
-                    range=["#b71c1c", "#b26a00", "#1b5e20"],
-                ),
-                legend=alt.Legend(title="Status"),
+    order = filtered["Clinic"].tolist()
+    base = alt.Chart(filtered)
+
+    bars = base.mark_bar(size=22, cornerRadiusTopLeft=4, cornerRadiusTopRight=4).encode(
+        x=alt.X(
+            "Clinic:N", sort=order, title=None,
+            axis=alt.Axis(labelColor="#898781", labelFontSize=11, domainColor="#c3c2b7"),
+        ),
+        y=alt.Y(
+            "Health Score:Q", title="Health score",
+            axis=alt.Axis(gridColor="#e1e0d9", domainOpacity=0, labelColor="#898781", tickCount=5),
+        ),
+        color=alt.Color(
+            "Status:N",
+            scale=alt.Scale(
+                domain=["Critical", "At-Risk", "Stable"],
+                range=[STATUS_HEX["Critical"], STATUS_HEX["At-Risk"], STATUS_HEX["Stable"]],
             ),
-            tooltip=["Clinic", "Plan", "Health Score", "Status", "Trend"],
-        )
+            legend=alt.Legend(title=None, orient="top", labelFontSize=11),
+        ),
+        tooltip=["Clinic", "Plan", "Health Score", "Status", "Trend"],
     )
-    st.altair_chart(chart, use_container_width=True)
+    labels = base.mark_text(dy=-8, fontSize=11, color="#52514e").encode(
+        x=alt.X("Clinic:N", sort=order),
+        y="Health Score:Q",
+        text=alt.Text("Health Score:Q", format=".0f"),
+    )
+
+    chart = (
+        (bars + labels)
+        .properties(height=320)
+        .configure_view(strokeWidth=0)
+        .configure(background="transparent", font="system-ui")
+    )
+    with st.container(border=True):
+        st.altair_chart(chart, use_container_width=True)
 
 
 def render_dashboard(scorecard: pd.DataFrame, status_filter: list[str]) -> None:
@@ -488,10 +584,12 @@ def render_dashboard(scorecard: pd.DataFrame, status_filter: list[str]) -> None:
                         "Sync Score": "{:.1f}",
                         "Triage Score": "{:.1f}",
                         "Health Score": "{:.1f}",
+                        "Status": _format_status_badge,
                     }
                 )
             )
-            st.dataframe(styled, use_container_width=True, hide_index=True)
+            with st.container(border=True):
+                st.dataframe(styled, use_container_width=True, hide_index=True)
 
     with right:
         st.subheader("Health Score by Account")
@@ -508,6 +606,7 @@ def main() -> None:
         page_icon="🩺",
         layout="wide",
     )
+    st.markdown(APP_CSS, unsafe_allow_html=True)  # Shared design tokens + KPI card styles.
     ensure_database(DB_PATH)                 # Auto-initialize + seed on startup.
     scorecard = build_scorecard(DB_PATH)     # Aggregate telemetry -> scores.
     status_filter = render_sidebar()         # Sidebar controls.
